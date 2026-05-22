@@ -1,16 +1,20 @@
 import { Context } from 'hono';
 import { Constants } from './constants';
 import { Strings } from './strings';
-import { userAPI } from './providers/twitter/profile';
+import { userAPI } from '@fxembed/atmosphere/providers/twitter/profile';
+import { twitterBuildHostFromContext } from './providers/twitter/build-host-adapter';
 import { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getBranding } from './helpers/branding';
 import { InputFlags } from './types/types';
+import { formatRuntime } from './helpers/runtime';
 
 export const returnError = (c: Context, error: string): Response => {
   const branding = getBranding(c);
   return c.html(
     Strings.BASE_HTML.format({
+      runtime: formatRuntime(),
       lang: '',
+      body: '',
       headers: [
         `<meta property="og:title" content="${branding.name}"/>`,
         `<meta property="og:description" content="${error}"/>`,
@@ -27,7 +31,7 @@ export const handleProfile = async (
   flags: InputFlags
 ): Promise<Response> => {
   console.log('flags', JSON.stringify(flags));
-  const api = await userAPI(username, c, true);
+  const api = await userAPI(username, twitterBuildHostFromContext(c), true);
   const user = api?.user as APIUser;
 
   /* Catch this request if it's an API response */
@@ -46,7 +50,10 @@ export const handleProfile = async (
     case 401:
       return returnError(c, Strings.ERROR_PRIVATE);
     case 404:
-      return returnError(c, Strings.ERROR_USER_NOT_FOUND);
+      return returnError(
+        c,
+        api.reason === 'suspended' ? Strings.ERROR_USER_SUSPENDED : Strings.ERROR_USER_NOT_FOUND
+      );
     case 500:
       return returnError(c, Strings.ERROR_API_FAIL);
   }
@@ -70,9 +77,11 @@ export const handleProfile = async (
 
   return c.html(
     Strings.BASE_HTML.format({
+      runtime: formatRuntime(),
       brandingName: branding.name,
       lang: `lang="en"`,
-      headers: headers.join('')
+      headers: headers.join(''),
+      body: ''
     })
   );
 };

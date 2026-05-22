@@ -7,7 +7,9 @@ export enum Experiment {
   BROADCAST_STREAM_API = 'BROADCAST_STREAM_API',
   KITCHENSINK_VIDEO = 'KITCHENSINK_VIDEO',
   KITCHENSINK_GIF = 'KITCHENSINK_GIF',
-  USE_HORIZON_WEB = 'USE_HORIZON_WEB'
+  USE_HORIZON_WEB = 'USE_HORIZON_WEB',
+  ENABLE_CUSTOM_BRANDING = 'ENABLE_CUSTOM_BRANDING',
+  TELEGRAM_PBS_PROXY = 'TELEGRAM_PBS_PROXY'
 }
 
 type ExperimentConfig = {
@@ -61,6 +63,16 @@ const Experiments: { [key in Experiment]: ExperimentConfig } = {
     name: 'Use Horizon Web',
     description: 'Use Horizon Web to load X/Twitter pages',
     percentage: 0
+  },
+  [Experiment.ENABLE_CUSTOM_BRANDING]: {
+    name: 'Enable custom branding',
+    description: 'Enable custom branding',
+    percentage: 0
+  },
+  [Experiment.TELEGRAM_PBS_PROXY]: {
+    name: 'Telegram PBS proxy',
+    description: 'Proxy pbs.twimg.com post photos through PBS proxy for Telegram',
+    percentage: 1
   }
 };
 

@@ -1,8 +1,10 @@
 /* eslint-disable no-case-declarations */
 import { Strings } from '../strings';
 import { DataProvider, returnError } from './status';
-import { constructTwitterThread } from '../providers/twitter/conversation';
-import { constructBlueskyThread } from '../providers/bluesky/conversation';
+import { constructTwitterThread } from '@fxembed/atmosphere/providers/twitter/conversation';
+import { twitterBuildHostFromContext } from '../providers/twitter/build-host-adapter';
+import { constructBlueskyThread } from '@fxembed/atmosphere/providers/bluesky/conversation';
+import { blueskyBuildHostFromContext } from '../providers/bluesky/build-host-adapter';
 import { Constants } from '../constants';
 import { getActivitySocialProof } from '../helpers/socialproof';
 import i18next from 'i18next';
@@ -14,12 +16,13 @@ import { Experiment, experimentCheck } from '../experiments';
 import { Context } from 'hono';
 import { shouldTranscodeGif } from '../helpers/giftranscode';
 import { normalizeLanguage } from '../helpers/language';
-import { constructTikTokVideo } from '../providers/tiktok/conversation';
+import { constructTikTokVideo } from '@fxembed/atmosphere/providers/tiktok/conversation';
 import { renderArticleToHtml, DISCORD_ARTICLE_MAX_LENGTH } from '../helpers/article';
 import {
   facetUtf16RangeOnPlainText,
   normalizeUtf16EntityRange
 } from '../helpers/twitterTextIndices';
+import { getLocalizedTombstoneLine, isTombstone } from '../helpers/tombstone';
 
 const convertArticleMediaToAttachment = (
   media: TwitterApiMedia
@@ -152,6 +155,7 @@ const getStatusText = (status: APIStatus): StatusTextResult => {
   }
 
   const convertedStatusText = status.text.trim().replace(/\n/g, '<br>︀︀');
+
   if (status.translation) {
     console.log('translation', JSON.stringify(status.translation));
     const { translation } = status;
@@ -168,16 +172,22 @@ const getStatusText = (status: APIStatus): StatusTextResult => {
     text = formatStatus(convertedStatusText, status) + '<br><br>';
   }
   if (status.quote) {
-    // console.log('quote!!', status.quote);
-    const quoteText = (status.quote.translation?.text ?? status.quote.text)
-      .trim()
-      .replace(/\n/g, '<br>︀︀');
-    text += `<blockquote><b>${i18next.t('ivQuoteHeader').format({
-      authorName: status.quote.author.name,
-      authorURL: status.quote.author.url,
-      authorHandle: status.quote.author.screen_name,
-      url: status.quote.url
-    })}</b><br>︀<br>${formatStatus(quoteText, status.quote)}</blockquote>`;
+    if (isTombstone(status.quote)) {
+      text += `<blockquote><i>${status.quote.message}</i></blockquote>`;
+    } else {
+      const quoteText = (status.quote.translation?.text ?? status.quote.text)
+        .trim()
+        .replace(/\n/g, '<br>︀︀');
+      text += `<blockquote><b>${i18next.t('ivQuoteHeader').format({
+        authorName: status.quote.author.name,
+        authorURL: status.quote.author.url,
+        authorHandle: status.quote.author.screen_name,
+        url: status.quote.url
+      })}</b><br>︀<br>${formatStatus(quoteText, status.quote)}</blockquote>`;
+    }
+  }
+  if (status.replying_to) {
+    text = `<sub>↩ <a href="${status.replying_to.profile_url}" class="u-url mention">${status.replying_to.display_name ?? ''} (@${status.replying_to.screen_name})</a></sub><br>${text}`;
   }
   if (status.poll) {
     text += `${generatePoll(status.poll)}`;
@@ -384,18 +394,28 @@ export const handleActivity = async (
     mediaNumber = decoded.n;
   }
 
+  const preferredProxyServiceHost =
+    typeof decoded.p === 'string' && decoded.p.length > 0 ? decoded.p : undefined;
+
   console.log('snowcode params', JSON.stringify(decoded));
 
   let thread: SocialThread;
   if (provider === DataProvider.Twitter) {
-    thread = await constructTwitterThread(statusId, false, c, language ?? undefined, false);
+    thread = await constructTwitterThread(
+      statusId,
+      false,
+      twitterBuildHostFromContext(c),
+      language ?? undefined,
+      false
+    );
   } else if (provider === DataProvider.Bluesky) {
     thread = await constructBlueskyThread(
       statusId,
       authorHandle ?? '',
       false,
-      c,
-      language ?? undefined
+      blueskyBuildHostFromContext(c),
+      language ?? undefined,
+      preferredProxyServiceHost ? { preferredProxyServiceHost } : undefined
     );
   } else if (provider === DataProvider.TikTok) {
     // Get proxy base URL from the current request for TikTok video proxy
@@ -406,15 +426,26 @@ export const handleActivity = async (
     return returnError(c, Strings.ERROR_API_FAIL);
   }
 
+  if (!thread.status) {
+    if (provider === DataProvider.Bluesky) {
+      return returnError(
+        c,
+        thread.code === 404 ? Strings.ERROR_TWEET_NOT_FOUND : Strings.ERROR_BLUESKY_UNAVAILABLE
+      );
+    }
+    return returnError(c, Strings.ERROR_API_FAIL);
+  }
+
+  if (isTombstone(thread.status)) {
+    const message = await getLocalizedTombstoneLine(thread.status.reason, language ?? undefined);
+    return returnError(c, message);
+  }
+
   await i18next.use(icu).init({
-    lng: normalizeLanguage(language ?? thread.status?.lang ?? 'en'),
+    lng: normalizeLanguage(language ?? thread.status.lang ?? 'en'),
     resources: translationResources,
     fallbackLng: 'en'
   });
-
-  if (!thread.status) {
-    return returnError(c, Strings.ERROR_API_FAIL);
-  }
 
   // Get status text and article media
   const statusResult = getStatusText(thread.status as APIStatus);
@@ -429,7 +460,7 @@ export const handleActivity = async (
     created_at: new Date(thread.status.created_at).toISOString(),
     edited_at: null,
     reblog: null,
-    in_reply_to_id: thread.status.replying_to?.status,
+    in_reply_to_id: null,
     in_reply_to_account_id: null,
     language: thread.status.lang,
     content: statusText,
@@ -483,7 +514,9 @@ export const handleActivity = async (
   const rawMediaList =
     (thread.status.media?.all?.length ?? 0) > 0
       ? thread.status.media?.all
-      : (thread.status.quote?.media?.all ?? []);
+      : !isTombstone(thread.status.quote)
+        ? (thread.status.quote?.media?.all ?? [])
+        : [];
   let mediaList = rawMediaList;
 
   if (!textOnly) {
@@ -500,9 +533,12 @@ export const handleActivity = async (
     if (
       forceMosaic &&
       mediaList?.length !== 1 &&
-      (thread.status.media?.mosaic || thread.status.quote?.media?.mosaic)
+      (thread.status.media?.mosaic ||
+        (!isTombstone(thread.status.quote) && thread.status.quote?.media?.mosaic))
     ) {
-      const mosaic = thread.status.media?.mosaic || thread.status.quote?.media?.mosaic;
+      const mosaic =
+        thread.status.media?.mosaic ||
+        (!isTombstone(thread.status.quote) ? thread.status.quote?.media?.mosaic : undefined);
       response.media_attachments = [
         {
           id: '114163769487684704',

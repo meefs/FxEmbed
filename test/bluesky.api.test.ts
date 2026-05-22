@@ -1,7 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { app } from '../src/worker';
 import threadSingle from './fixtures/bluesky/thread-single.json';
-import threadQuoteNotfound from './fixtures/bluesky/thread-quote-notfound.json';
 import threadMultiImage from './fixtures/bluesky/thread-multi-image.json';
 import profileDetail from './fixtures/bluesky/profile-detail.json';
 import authorFeed from './fixtures/bluesky/author-feed.json';
@@ -15,6 +14,8 @@ import repostersProfilesBatch from './fixtures/bluesky/reposters-profiles-batch.
 import getLikes from './fixtures/bluesky/get-likes.json';
 import likersProfilesBatch from './fixtures/bluesky/likers-profiles-batch.json';
 import conversationThread from './fixtures/bluesky/conversation-thread.json';
+import getTrendingTopics from './fixtures/bluesky/get-trending-topics.json';
+import type { APITrendsResponse } from '../src/realms/api/schemas';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -41,37 +42,21 @@ test('GET /2/status uses rkey as id and returns cid', async () => {
   expect(res.status).toBe(200);
   const body = (await res.json()) as {
     code: number;
-    status: { id: string; cid?: string; url: string; quote?: { text: string } };
+    status: {
+      id: string;
+      cid?: string;
+      url: string;
+      quote?: { text: string };
+      author?: { verification?: { verified?: boolean; verified_by?: string } };
+    };
   };
   expect(body.code).toBe(200);
   expect(body.status.id).toBe('rkeymain');
   expect(body.status.cid).toBe('bafycidmain');
   expect(body.status.url).toContain('/author.test/post/rkeymain');
+  expect(body.status.author?.verification?.verified).toBe(true);
+  expect(body.status.author?.verification?.verified_by).toBe('bsky.app');
 });
-
-// test('GET /2/status quote notFound yields tombstone quote', async () => {
-//   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
-//     const u = typeof input === 'string' ? input : input.url;
-//     if (u.includes('app.bsky.feed.getPostThread')) {
-//       return new Response(JSON.stringify(threadQuoteNotfound), {
-//         status: 200,
-//         headers: { 'Content-Type': 'application/json' }
-//       });
-//     }
-//     if (u.includes('app.bsky.actor.getProfiles')) {
-//       return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
-//     }
-//     throw new Error(`Unexpected fetch: ${u}`);
-//   });
-
-//   const res = await app.request('https://api.fxbsky.app/2/status/author.test/rkeyquotehost', {
-//     headers: { 'User-Agent': 'FxEmbedTest/1.0' }
-//   });
-//   expect(res.status).toBe(200);
-//   const body = (await res.json()) as { status: { quote?: { text: string; id: string } } };
-//   expect(body.status.quote?.id).toBe('rkeygone');
-//   expect(body.status.quote?.text).toContain('Deleted');
-// });
 
 test('GET /2/status multi-image embed exposes photos', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
@@ -129,6 +114,95 @@ test('GET /2/search returns results and cursor.bottom', async () => {
   expect(body.results.length).toBe(1);
   expect(body.results[0].id).toBe('rkeysearch');
   expect(body.results[0].text).toContain('Search hit fixture');
+});
+
+test('GET /2/trends maps Bluesky getTrendingTopics to APITrendsResponse', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
+    const u = typeof input === 'string' ? input : input.url;
+    if (u.includes('app.bsky.unspecced.getTrendingTopics')) {
+      expect(u).toContain('limit=4');
+      return new Response(JSON.stringify(getTrendingTopics), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+
+  const res = await app.request('https://api.fxbsky.app/2/trends?count=4', {
+    headers: { 'User-Agent': 'FxEmbedTest/1.0' }
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as APITrendsResponse;
+  expect(body.code).toBe(200);
+  expect(body.timeline_type).toBe('trending');
+  expect(body.trends).toHaveLength(4);
+  expect(body.trends[0].name).toBe('Topic One');
+  expect(body.trends[0].context).toBe('https://bsky.app/profile/trending.bsky.app/feed/1');
+  expect(body.trends[1].name).toBe('Topic Two');
+  expect(body.trends[2].name).toBe('Suggested A');
+  expect(body.trends[2].context).toContain('Suggested feed');
+  expect(body.trends[2].context).toContain('https://bsky.app/profile/bsky.app/feed/with-friends');
+  expect(body.cursor.top).toBeNull();
+  expect(body.cursor.bottom).toBeNull();
+});
+
+test('GET /2/trends?type=suggested returns only suggested rows', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
+    const u = typeof input === 'string' ? input : input.url;
+    if (u.includes('app.bsky.unspecced.getTrendingTopics')) {
+      expect(u).toContain('limit=2');
+      return new Response(JSON.stringify(getTrendingTopics), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+
+  const res = await app.request('https://api.fxbsky.app/2/trends?type=suggested&count=2', {
+    headers: { 'User-Agent': 'FxEmbedTest/1.0' }
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as APITrendsResponse;
+  expect(body.timeline_type).toBe('suggested');
+  expect(body.trends).toHaveLength(2);
+  expect(body.trends[0].name).toBe('Suggested A');
+  expect(body.trends[0].context).toContain('Suggested feed');
+  expect(body.trends[1].name).toBe('Suggested B');
+});
+
+test('GET /2/trends returns 404 when upstream topics are empty', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
+    const u = typeof input === 'string' ? input : input.url;
+    if (u.includes('app.bsky.unspecced.getTrendingTopics')) {
+      return new Response(JSON.stringify({ topics: [], suggested: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+
+  const res = await app.request('https://api.fxbsky.app/2/trends', {
+    headers: { 'User-Agent': 'FxEmbedTest/1.0' }
+  });
+  expect(res.status).toBe(404);
+});
+
+test('GET /2/trends returns 500 when upstream errors', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
+    const u = typeof input === 'string' ? input : input.url;
+    if (u.includes('app.bsky.unspecced.getTrendingTopics')) {
+      return new Response('upstream', { status: 502 });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+
+  const res = await app.request('https://api.fxbsky.app/2/trends', {
+    headers: { 'User-Agent': 'FxEmbedTest/1.0' }
+  });
+  expect(res.status).toBe(500);
 });
 
 test('GET /2/search passes cursor and feed=top as sort', async () => {
@@ -194,6 +268,7 @@ test('GET /2/profile returns user envelope and counts', async () => {
       following: number;
       statuses: number;
       id: string;
+      verification?: { verified?: boolean; verified_by?: string };
     };
   };
   expect(body.code).toBe(200);
@@ -204,6 +279,8 @@ test('GET /2/profile returns user envelope and counts', async () => {
   expect(body.user?.following).toBe(50);
   expect(body.user?.statuses).toBe(42);
   expect(body.user?.description).toContain('https://example.com/page');
+  expect(body.user?.verification?.verified).toBe(true);
+  expect(body.user?.verification?.verified_by).toBe('bsky.app');
 });
 
 test('GET /2/profile/{handle}/statuses returns feed, cursor.bottom, and reposted_by', async () => {
@@ -234,7 +311,36 @@ test('GET /2/profile/{handle}/statuses returns feed, cursor.bottom, and reposted
   expect(body.results.length).toBe(2);
   expect(body.results[0].id).toBe('rkeymain');
   expect(body.results[0].text).toContain('Hello timeline');
+  expect((body.results[0] as { type?: string }).type).toBe('status');
   expect(body.results[1].reposted_by?.screen_name).toBe('reposter.test');
+});
+
+test('GET /2/profile/{handle}/statuses?groupthreads=1 returns discriminated timeline rows', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo) => {
+    const u = typeof input === 'string' ? input : input.url;
+    if (u.includes('app.bsky.feed.getAuthorFeed')) {
+      return new Response(JSON.stringify(authorFeed), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+
+  const res = await app.request(
+    'https://api.fxbsky.app/2/profile/author.test/statuses?groupthreads=1',
+    { headers: { 'User-Agent': 'FxEmbedTest/1.0' } }
+  );
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as {
+    code: number;
+    results: Array<{ type: 'status' | 'thread'; statuses?: unknown[]; conversation_id?: string }>;
+  };
+  expect(body.code).toBe(200);
+  expect(body.results.length).toBe(2);
+  for (const row of body.results) {
+    expect(row.type === 'status' || row.type === 'thread').toBe(true);
+  }
 });
 
 test('GET /2/profile/{handle}/media uses posts_with_media filter and cursor.bottom', async () => {

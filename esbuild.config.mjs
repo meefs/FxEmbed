@@ -52,25 +52,23 @@ let envVariables = [
   'POLYGLOT_ACCESS_TOKEN',
   'API_HOST_LIST',
   'BLUESKY_API_HOST_LIST',
-  'GENERIC_API_HOST_LIST',
+  'ATMOSPHERE_API_HOST_LIST',
   'SENTRY_DSN',
   'GIF_TRANSCODE_DOMAIN_LIST',
   'VIDEO_TRANSCODE_DOMAIN_LIST',
   'VIDEO_TRANSCODE_BSKY_DOMAIN_LIST',
+  'PBS_PROXY_DOMAIN_LIST',
   'OLD_EMBED_DOMAINS',
   'TWITTER_ROOT'
 ];
 
-// Create defines for all environment variables
+// Inline process.env.* so Workers bundles stay static; Bun/Node read real process.env at runtime.
 let defines = {};
 for (let envVar of envVariables) {
-  defines[envVar] = `"${process.env[envVar]}"`;
+  defines[`process.env.${envVar}`] = JSON.stringify(process.env[envVar] ?? '');
 }
 
-defines['BLUESKY_API_HOST_LIST'] = JSON.stringify(process.env.BLUESKY_API_HOST_LIST ?? '');
-defines['GENERIC_API_HOST_LIST'] = JSON.stringify(process.env.GENERIC_API_HOST_LIST ?? '');
-
-defines['RELEASE_NAME'] = `"${releaseName}"`;
+defines['process.env.RELEASE_NAME'] = JSON.stringify(releaseName);
 
 try {
   const raw = fs.readFileSync('credentials.enc.json', 'utf-8');
@@ -94,15 +92,15 @@ try {
       'credentials.enc.json: expected object with non-empty string ciphertext and iv'
     );
   }
-  defines['ENCRYPTED_CREDENTIALS'] = JSON.stringify(enc.ciphertext);
-  defines['CREDENTIALS_IV'] = JSON.stringify(enc.iv);
+  defines['process.env.ENCRYPTED_CREDENTIALS'] = JSON.stringify(enc.ciphertext);
+  defines['process.env.CREDENTIALS_IV'] = JSON.stringify(enc.iv);
 } catch (err) {
   if (err && typeof err === 'object' && err.code === 'ENOENT') {
     console.warn(
       'No credentials.enc.json found; encrypted credential bundle will be empty (local: npm run credentials:encrypt, CI: fetch from R2 before build).'
     );
-    defines['ENCRYPTED_CREDENTIALS'] = JSON.stringify('');
-    defines['CREDENTIALS_IV'] = JSON.stringify('');
+    defines['process.env.ENCRYPTED_CREDENTIALS'] = JSON.stringify('');
+    defines['process.env.CREDENTIALS_IV'] = JSON.stringify('');
   } else {
     throw err;
   }

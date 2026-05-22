@@ -4,10 +4,16 @@ import {
   APIUserListResultsSchema,
   ApiQueryErrorSchema,
   APISearchResultsBlueskySchema,
-  SocialConversationBlueskySchema,
-  SocialThreadBlueskySchema,
-  UserAPIResponseSchema
+  APIGroupedSearchResultsBlueskySchema,
+  APITrendsResponseSchema,
+  SocialConversationSchema,
+  UserAPIResponseSchema,
+  SocialThreadSchema
 } from '../api/schemas';
+import {
+  BLUESKY_TRENDS_FEED_KINDS,
+  type BlueskyTrendsFeedKind
+} from '@fxembed/atmosphere/providers/bluesky/trends';
 
 const langQuery = z.object({
   lang: z.string().optional().openapi({
@@ -31,7 +37,7 @@ const blueskySearchQueryString = (openapiMeta: { description: string; example: s
 export const blueskyStatusV2Route = createRoute({
   method: 'get',
   path: '/2/status/{handle}/{rkey}',
-  summary: 'Get a single Bluesky post',
+  summary: 'Get post',
   description:
     'Returns one Bluesky post by handle and record key (rkey), in the same envelope as FxTwitter API v2 (`code`, `status`, `thread`, `author`).',
   request: {
@@ -50,7 +56,7 @@ export const blueskyStatusV2Route = createRoute({
   responses: {
     200: {
       description: 'Thread payload (check `code` for upstream errors mirrored as HTTP status)',
-      content: { 'application/json': { schema: SocialThreadBlueskySchema } }
+      content: { 'application/json': { schema: SocialThreadSchema } }
     },
     400: {
       description: 'Invalid path or query parameters',
@@ -58,11 +64,15 @@ export const blueskyStatusV2Route = createRoute({
     },
     404: {
       description: 'Not found',
-      content: { 'application/json': { schema: SocialThreadBlueskySchema } }
+      content: { 'application/json': { schema: SocialThreadSchema } }
+    },
+    503: {
+      description: 'Bluesky upstream timeout or error (post may still exist)',
+      content: { 'application/json': { schema: SocialThreadSchema } }
     },
     500: {
       description: 'Server or upstream failure',
-      content: { 'application/json': { schema: SocialThreadBlueskySchema } }
+      content: { 'application/json': { schema: SocialThreadSchema } }
     }
   }
 });
@@ -70,7 +80,7 @@ export const blueskyStatusV2Route = createRoute({
 export const blueskyStatusRepostsV2Route = createRoute({
   method: 'get',
   path: '/2/status/{handle}/{rkey}/reposts',
-  summary: 'List accounts that reposted a post',
+  summary: 'List reposters of post',
   description:
     'Returns users who reposted the given post, in the same envelope as FxTwitter `GET /2/status/{id}/reposts` (`code`, `results`, `cursor`). Pagination uses Bluesky `app.bsky.feed.getRepostedBy`: pass the prior `cursor.bottom` as the `cursor` query param. `handle` may be a handle or DID (`did:plc:…`). `cursor.top` is always null.',
   request: {
@@ -118,7 +128,7 @@ export const blueskyStatusRepostsV2Route = createRoute({
 export const blueskyStatusLikesV2Route = createRoute({
   method: 'get',
   path: '/2/status/{handle}/{rkey}/likes',
-  summary: 'List accounts that liked a post',
+  summary: 'List likers of post',
   description:
     'Returns users who liked the given post, in the same envelope as FxTwitter-style user list results (`code`, `results`, `cursor`). Pagination uses Bluesky `app.bsky.feed.getLikes`: pass the prior `cursor.bottom` as the `cursor` query param. `handle` may be a handle or DID (`did:plc:…`). `cursor.top` is always null.',
   request: {
@@ -166,7 +176,7 @@ export const blueskyStatusLikesV2Route = createRoute({
 export const blueskyThreadV2Route = createRoute({
   method: 'get',
   path: '/2/thread/{handle}/{rkey}',
-  summary: 'Get a Bluesky thread (main post + parents + self-thread replies)',
+  summary: 'Get unrolled thread',
   description:
     'Returns the post chain for a Bluesky thread, matching the shape of FxTwitter `GET /2/thread/{id}`.',
   request: {
@@ -179,7 +189,7 @@ export const blueskyThreadV2Route = createRoute({
   responses: {
     200: {
       description: 'Thread payload',
-      content: { 'application/json': { schema: SocialThreadBlueskySchema } }
+      content: { 'application/json': { schema: SocialThreadSchema } }
     },
     400: {
       description: 'Invalid path or query parameters',
@@ -187,11 +197,15 @@ export const blueskyThreadV2Route = createRoute({
     },
     404: {
       description: 'Not found',
-      content: { 'application/json': { schema: SocialThreadBlueskySchema } }
+      content: { 'application/json': { schema: SocialThreadSchema } }
+    },
+    503: {
+      description: 'Bluesky upstream timeout or error (post may still exist)',
+      content: { 'application/json': { schema: SocialThreadSchema } }
     },
     500: {
       description: 'Server or upstream failure',
-      content: { 'application/json': { schema: SocialThreadBlueskySchema } }
+      content: { 'application/json': { schema: SocialThreadSchema } }
     }
   }
 });
@@ -199,7 +213,7 @@ export const blueskyThreadV2Route = createRoute({
 export const blueskyConversationV2Route = createRoute({
   method: 'get',
   path: '/2/conversation/{handle}/{rkey}',
-  summary: 'Get a Bluesky post with full thread and paginated replies',
+  summary: 'Get unrolled thread and replies',
   description:
     'Returns the focal post, ancestor chain and author self-thread (same as `/2/thread/{handle}/{rkey}` on the first page), plus **direct** replies from other participants. Replies are sorted by `ranking_mode` (default likes). Pagination uses an opaque `cursor` query param (`cursor.bottom` from the prior response); Bluesky `getPostThread` has no native reply cursor, so each page refetches the thread slice. Optional `count` (1–100, default 20) sets the reply page size. Very large reply lists still require a large upstream payload when loading direct replies.',
   request: {
@@ -231,7 +245,7 @@ export const blueskyConversationV2Route = createRoute({
   responses: {
     200: {
       description: 'Conversation payload with thread, replies, and pagination cursor',
-      content: { 'application/json': { schema: SocialConversationBlueskySchema } }
+      content: { 'application/json': { schema: SocialConversationSchema } }
     },
     400: {
       description: 'Invalid path, query parameters, or cursor',
@@ -239,11 +253,15 @@ export const blueskyConversationV2Route = createRoute({
     },
     404: {
       description: 'Not found',
-      content: { 'application/json': { schema: SocialConversationBlueskySchema } }
+      content: { 'application/json': { schema: SocialConversationSchema } }
+    },
+    503: {
+      description: 'Bluesky upstream timeout or error (post may still exist)',
+      content: { 'application/json': { schema: SocialConversationSchema } }
     },
     500: {
       description: 'Server or upstream failure',
-      content: { 'application/json': { schema: SocialConversationBlueskySchema } }
+      content: { 'application/json': { schema: SocialConversationSchema } }
     }
   }
 });
@@ -251,7 +269,7 @@ export const blueskyConversationV2Route = createRoute({
 export const blueskySearchV2Route = createRoute({
   method: 'get',
   path: '/2/search',
-  summary: 'Search posts',
+  summary: 'Search posts by query',
   description:
     'Search posts via Bluesky `app.bsky.feed.searchPosts`. Response shape matches FxTwitter `GET /2/search` (`code`, `results`, `cursor`). `cursor.top` is always null; pass `cursor.bottom` as the `cursor` query param. `feed=latest` and `feed=top` map to Bluesky `sort`. `feed=media` uses `sort=latest` then keeps posts with image, video, or external link embeds (may return fewer hits than `count`). `lang` is used for inline translation only, not the upstream post-language filter.',
   request: {
@@ -296,10 +314,54 @@ export const blueskySearchV2Route = createRoute({
   }
 });
 
+const blueskyTrendsTypeDescription = `Trend list. \`trending\` returns Bluesky live topics first, then suggested topic feeds to fill \`count\`. \`suggested\` returns only suggested feeds. Upstream: \`app.bsky.unspecced.getTrendingTopics\` (max 25 rows per request).`;
+
+export const blueskyTrendsV2Route = createRoute({
+  method: 'get',
+  path: '/2/trends',
+  summary: 'Trending topics (Bluesky)',
+  description:
+    'Returns trending topic labels and suggested topic feeds from the Bluesky public AppView, in the same envelope as FxTwitter `GET /2/trends` (`code`, `timeline_type`, `trends`, `cursor`). Each trend’s `context` includes a bsky.app URL to the topic feed when the upstream provides a `link`.',
+  request: {
+    query: z.object({
+      type: z
+        .enum(BLUESKY_TRENDS_FEED_KINDS as [BlueskyTrendsFeedKind, ...BlueskyTrendsFeedKind[]])
+        .optional()
+        .openapi({
+          description: blueskyTrendsTypeDescription,
+          default: 'trending',
+          example: 'trending'
+        }),
+      count: z.coerce.number().int().min(1).max(50).optional().openapi({
+        description: 'Number of trends (default 20, max 50)',
+        default: 20
+      })
+    })
+  },
+  responses: {
+    200: {
+      description: 'Trends payload',
+      content: { 'application/json': { schema: APITrendsResponseSchema } }
+    },
+    400: {
+      description: 'Invalid query parameters (e.g. `type` or `count` out of allowed range)',
+      content: { 'application/json': { schema: ApiQueryErrorSchema } }
+    },
+    404: {
+      description: 'Trends unavailable or empty upstream list',
+      content: { 'application/json': { schema: APITrendsResponseSchema } }
+    },
+    500: {
+      description: 'Upstream or processing error',
+      content: { 'application/json': { schema: APITrendsResponseSchema } }
+    }
+  }
+});
+
 export const blueskyProfileV2Route = createRoute({
   method: 'get',
   path: '/2/profile/{handle}',
-  summary: 'Get Bluesky actor profile',
+  summary: 'Get profile',
   description:
     'Returns profile fields in the same envelope as FxTwitter `GET /2/profile/{handle}` (`code`, `message`, `user`). `handle` may be a handle (e.g. `user.bsky.social`) or a DID (`did:plc:…`).',
   request: {
@@ -333,7 +395,7 @@ export const blueskyProfileV2Route = createRoute({
 export const blueskyProfileFollowersV2Route = createRoute({
   method: 'get',
   path: '/2/profile/{handle}/followers',
-  summary: 'List followers of an actor',
+  summary: 'List followers of user',
   description:
     'Returns a page in the same shape as FxTwitter `GET /2/profile/{handle}/followers` (`code`, `results`, `cursor`). `handle` may be a handle or DID. Pagination uses Bluesky `app.bsky.graph.getFollowers`: pass the prior `cursor.bottom` as the `cursor` query param. `cursor.top` is always null.',
   request: {
@@ -377,7 +439,7 @@ export const blueskyProfileFollowersV2Route = createRoute({
 export const blueskyProfileFollowingV2Route = createRoute({
   method: 'get',
   path: '/2/profile/{handle}/following',
-  summary: 'List accounts an actor follows',
+  summary: 'List following of user',
   description:
     'Returns a page in the same shape as FxTwitter `GET /2/profile/{handle}/following` (`code`, `results`, `cursor`). `handle` may be a handle or DID. Pagination uses Bluesky `app.bsky.graph.getFollows`: pass the prior `cursor.bottom` as the `cursor` query param. `cursor.top` is always null.',
   request: {
@@ -515,7 +577,7 @@ export const blueskyProfileLikesV2Route = createRoute({
 export const blueskyProfileStatusesV2Route = createRoute({
   method: 'get',
   path: '/2/profile/{handle}/statuses',
-  summary: 'List posts for an actor',
+  summary: 'List user statuses',
   description:
     'Returns a timeline page in the same shape as FxTwitter `GET /2/profile/{handle}/statuses` (`code`, `results`, `cursor`). `handle` may be a handle or DID. Pagination uses Bluesky `app.bsky.feed.getAuthorFeed`: `cursor.bottom` is the opaque next-page token (pass as `cursor` query param). `cursor.top` is always null—there is no reverse cursor on this upstream endpoint. Optional `since` (Unix time): when used without `cursor`, returns **204 No Content** if no posts are strictly newer than that instant. Values ≥ 1e12 are treated as milliseconds.',
   request: {
@@ -542,13 +604,21 @@ export const blueskyProfileStatusesV2Route = createRoute({
         description:
           'If truthy (`1`, `true`, `yes`, `on`, or empty), include replies (`posts_with_replies` upstream); otherwise `posts_no_replies`.'
       }),
+      groupthreads: z.string().optional().openapi({
+        description:
+          'If truthy, return `results` as a mix of `type: "status"` and `type: "thread"` entries (consecutive self-reply chains grouped).'
+      }),
       ...langQuery.shape
     })
   },
   responses: {
     200: {
-      description: 'Timeline page',
-      content: { 'application/json': { schema: APISearchResultsBlueskySchema } }
+      description: 'Timeline page (flat or grouped when `groupthreads` is set)',
+      content: {
+        'application/json': {
+          schema: z.union([APISearchResultsBlueskySchema, APIGroupedSearchResultsBlueskySchema])
+        }
+      }
     },
     204: {
       description:

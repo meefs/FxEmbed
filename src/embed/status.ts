@@ -4,25 +4,31 @@ import i18next from 'i18next';
 import icu from 'i18next-icu';
 import { Constants } from '../constants';
 import { handleQuote } from '../helpers/quote';
+import { isTombstone, withLocalizedTombstoneMessage } from '../helpers/tombstone';
 import { formatImageUrl, sanitizeText, truncateWithEllipsis } from '../helpers/utils';
+import { proxyTwitterPostPhotoUrl, shouldProxyTelegramPbsPhotos } from '../helpers/pbsProxy';
 import { Strings } from '../strings';
 import { getSocialProof } from '../helpers/socialproof';
 import { renderPhoto } from '../render/photo';
 import { renderVideo } from '../render/video';
 import { renderInstantView } from '../render/instantview';
-import { constructTwitterThread } from '../providers/twitter/conversation';
+import { constructTwitterThread } from '@fxembed/atmosphere/providers/twitter/conversation';
+import { twitterBuildHostFromContext } from '../providers/twitter/build-host-adapter';
 import { Experiment, experimentCheck } from '../experiments';
 import translationResources from '../../i18n/resources';
-import { constructBlueskyThread } from '../providers/bluesky/conversation';
+import { constructBlueskyThread } from '@fxembed/atmosphere/providers/bluesky/conversation';
+import { blueskyBuildHostFromContext } from '../providers/bluesky/build-host-adapter';
 import { DataProvider } from '../enum';
 import { encodeSnowcode } from '../helpers/snowcode';
 import { getBranding } from '../helpers/branding';
-import type { APITwitterStatus } from '../realms/api/schemas';
+import type { APIStatusTombstone, APITwitterStatus } from '../realms/api/schemas';
+import type { APIStatus, SocialThread } from '../types/apiStatus';
 import { shouldTranscodeGif } from '../helpers/giftranscode';
 import { normalizeLanguage } from '../helpers/language';
 import { getVideoTranscodeDomain, getVideoTranscodeDomainBluesky } from '../helpers/transcode';
-import { constructTikTokVideo } from '../providers/tiktok/conversation';
+import { constructTikTokVideo } from '@fxembed/atmosphere/providers/tiktok/conversation';
 import { InputFlags } from '../types/types';
+import { formatRuntime } from '../helpers/runtime';
 
 /**
  * Check if the tweet text is essentially just an article URL with no meaningful additional content.
@@ -61,13 +67,17 @@ const isArticleOnlyTweet = (status: APITwitterStatus): boolean => {
 
 export const returnError = (c: Context, error: string): Response => {
   const branding = getBranding(c);
+  console.log('branding', JSON.stringify(branding));
   return c.html(
     Strings.BASE_HTML.format({
+      runtime: formatRuntime(),
       brandingName: branding.name,
+      body: '',
       lang: '',
       headers: [
         `<meta property="og:title" content="${branding.name}"/>`,
-        `<meta property="og:description" content="${error}"/>`
+        `<meta property="og:description" content="${error}"/>`,
+        `<meta property="theme-color" content="${branding.color}"/>`
       ].join('')
     })
   ) as Response;
@@ -121,22 +131,27 @@ export const handleStatus = async (
     useActivity = true;
   }
 
+  let blueskyActivityPdsOut: { pdsHostHint?: string } | undefined;
+
   if (provider === DataProvider.Twitter) {
     thread = await constructTwitterThread(
       statusId,
       fetchWithThreads,
-      c,
+      twitterBuildHostFromContext(c),
       useActivity ? undefined : useLanguage,
       flags?.api ?? false
     );
   } else if (provider === DataProvider.Bluesky) {
-    thread = await constructBlueskyThread(
+    blueskyActivityPdsOut = useActivity ? {} : undefined;
+    thread = (await constructBlueskyThread(
       statusId,
       authorHandle ?? '',
       fetchWithThreads,
-      c,
-      useActivity ? undefined : useLanguage
-    );
+      blueskyBuildHostFromContext(c),
+      useActivity ? undefined : useLanguage,
+      undefined,
+      blueskyActivityPdsOut
+    )) as SocialThread;
   } else if (provider === DataProvider.TikTok) {
     // Get proxy base URL from the current request for TikTok video proxy
     const requestUrl = new URL(c.req.url);
@@ -146,7 +161,11 @@ export const handleStatus = async (
     return returnError(c, Strings.ERROR_API_FAIL);
   }
 
-  const status = thread?.status as APIStatus;
+  const rawStatus = thread?.status;
+  const status: APIStatus | APITwitterStatus | APIStatusTombstone | null =
+    rawStatus != null && isTombstone(rawStatus)
+      ? await withLocalizedTombstoneMessage(rawStatus, language)
+      : ((rawStatus as APIStatus | APITwitterStatus | null) ?? null);
 
   const api = {
     code: thread.code,
@@ -163,6 +182,9 @@ export const handleStatus = async (
       break;
     case 404:
       api.message = 'NOT_FOUND';
+      break;
+    case 503:
+      api.message = 'UPSTREAM_UNAVAILABLE';
       break;
     case 500:
       console.log(api);
@@ -182,10 +204,17 @@ export const handleStatus = async (
 
   if (status === null) {
     if (provider === DataProvider.Bluesky) {
-      return returnError(c, Strings.ERROR_BLUESKY_POST_NOT_FOUND);
+      return returnError(
+        c,
+        thread.code === 404 ? Strings.ERROR_TWEET_NOT_FOUND : Strings.ERROR_BLUESKY_UNAVAILABLE
+      );
     } else {
       return returnError(c, Strings.ERROR_TWEET_NOT_FOUND);
     }
+  }
+
+  if (isTombstone(status)) {
+    return returnError(c, `${status.message} :(`);
   }
 
   /* If there was any errors fetching the Tweet, we'll return it */
@@ -193,11 +222,12 @@ export const handleStatus = async (
     case 401:
       return returnError(c, Strings.ERROR_PRIVATE);
     case 404:
+      return returnError(c, Strings.ERROR_TWEET_NOT_FOUND);
+    case 503:
       if (provider === DataProvider.Bluesky) {
-        return returnError(c, Strings.ERROR_BLUESKY_POST_NOT_FOUND);
-      } else {
-        return returnError(c, Strings.ERROR_TWEET_NOT_FOUND);
+        return returnError(c, Strings.ERROR_BLUESKY_UNAVAILABLE);
       }
+      return returnError(c, Strings.ERROR_API_FAIL);
     case 500:
       console.log(api);
       return returnError(c, Strings.ERROR_API_FAIL);
@@ -228,7 +258,7 @@ export const handleStatus = async (
       !!(
         status.media?.photos?.[0] || // Force instant view for photos for now https://bugs.telegram.org/c/33679
         status.media?.mosaic ||
-        status.quote ||
+        (status.quote && !isTombstone(status.quote)) ||
         flags?.forceInstantView ||
         (status as APITwitterStatus)?.article ||
         (thread?.thread?.length ?? 0) > 1
@@ -252,7 +282,7 @@ export const handleStatus = async (
 
   // Check if mediaNumber exists, and if that media exists in status.media.all. If it does, we'll store overrideMedia variable
   if (mediaNumber && status.media && status.media.all && status.media.all[mediaNumber - 1]) {
-    overrideMedia = status.media.all[mediaNumber - 1];
+    overrideMedia = status.media.all[mediaNumber - 1] as APIMedia;
   }
 
   /* Catch direct media request (d.fxtwitter.com, or .mp4 / .jpg) */
@@ -312,7 +342,7 @@ export const handleStatus = async (
   /* At this point, we know we're going to have to create a
      regular embed because it's not an API or direct media request */
 
-  let authorText = getSocialProof(status) || Strings.DEFAULT_AUTHOR_TEXT;
+  let authorText = getSocialProof(status as APIStatus) || Strings.DEFAULT_AUTHOR_TEXT;
   const engagementText = authorText.replace(/ {4}/g, ' ');
   const originalSiteName = getBranding(c).name;
   let siteName = originalSiteName;
@@ -381,11 +411,12 @@ export const handleStatus = async (
     try {
       const instructions = renderInstantView({
         context: c,
-        status: status,
+        status: status as APIStatus,
         thread: thread,
         text: newText,
         flags: flags,
-        targetLanguage: language ?? status.lang ?? 'en'
+        targetLanguage: language ?? status.lang ?? 'en',
+        userAgent: userAgent
       });
       headers.push(...instructions.addHeaders);
       if (instructions.authorText) {
@@ -417,7 +448,11 @@ export const handleStatus = async (
   // Skip for activity to make embed generate faster for mosaic and such
   if (!useActivity && !flags?.textOnly) {
     const media =
-      status.media?.all && status.media?.all.length > 0 ? status.media : status.quote?.media || {};
+      status.media?.all && status.media?.all.length > 0
+        ? status.media
+        : !isTombstone(status.quote)
+          ? status.quote?.media || {}
+          : {};
     if (overrideMedia) {
       let instructions: ResponseInstructions;
 
@@ -427,7 +462,7 @@ export const handleStatus = async (
           instructions = renderPhoto(
             {
               context: c,
-              status: status,
+              status: status as APIStatus,
               authorText: authorText,
               engagementText: engagementText,
               userAgent: userAgent,
@@ -451,7 +486,7 @@ export const handleStatus = async (
           instructions = renderVideo(
             {
               context: c,
-              status: status,
+              status: status as APIStatus,
               userAgent: userAgent,
               text: newText,
               isOverrideMedia: true
@@ -474,7 +509,7 @@ export const handleStatus = async (
       }
     } else if (media?.videos) {
       const instructions = renderVideo(
-        { context: c, status: status, userAgent: userAgent, text: newText },
+        { context: c, status: status as APIStatus, userAgent: userAgent, text: newText },
         media.videos[0]
       );
       headers.push(...instructions.addHeaders);
@@ -486,7 +521,7 @@ export const handleStatus = async (
       }
     } else if (media?.mosaic) {
       if (userAgent.match(Constants.NATIVE_MULTI_IMAGE_UA_REGEX) && !flags.forceMosaic) {
-        const photos = status.media?.photos || [];
+        const photos = media?.photos || [];
 
         photos.forEach(photo => {
           /* Override the card type */
@@ -496,7 +531,7 @@ export const handleStatus = async (
           const instructions = renderPhoto(
             {
               context: c,
-              status: status,
+              status: status as APIStatus,
               authorText: authorText,
               engagementText: engagementText,
               userAgent: userAgent
@@ -509,7 +544,7 @@ export const handleStatus = async (
         const instructions = renderPhoto(
           {
             context: c,
-            status: status,
+            status: status as APIStatus,
             authorText: authorText,
             engagementText: engagementText,
             userAgent: userAgent
@@ -523,7 +558,7 @@ export const handleStatus = async (
       const instructions = renderPhoto(
         {
           context: c,
-          status: status,
+          status: status as APIStatus,
           authorText: authorText,
           engagementText: engagementText,
           userAgent: userAgent
@@ -588,9 +623,13 @@ export const handleStatus = async (
   }
 
   /* This Tweet quotes another Tweet, so we'll render the other Tweet where possible */
-  if (api.tweet?.quote) {
-    const quoteText = handleQuote(api.tweet.quote);
+  if (status.quote) {
+    const quoteText = handleQuote(status.quote as APIStatus | APIStatusTombstone);
     newText += `\n${quoteText}`;
+  }
+
+  if (!isDiscord && status.replying_to) {
+    newText = `↩ ${status.replying_to.display_name ?? ''} (@${status.replying_to.screen_name})<br>${newText}`;
   }
 
   const avatar = status.author.avatar_url;
@@ -599,20 +638,28 @@ export const handleStatus = async (
   // Check if this is an article-only tweet (text is just the article URL)
   const articleOnly = twitterStatus.article && isArticleOnlyTweet(twitterStatus);
 
+  const quoteHasDisplayableMedia =
+    !!status.quote &&
+    !isTombstone(status.quote) &&
+    (!!status.quote.media?.photos?.length || !!status.quote.media?.videos?.length);
+
   /* If we have no media to display, instead we'll display the user profile picture in the embed,
      OR if this is an article-only tweet, use the article cover image */
   if (
     !status.media?.videos &&
     !status.media?.photos &&
-    !status.quote?.media?.photos &&
-    !status.quote?.media?.videos &&
+    !quoteHasDisplayableMedia &&
     !flags?.textOnly
   ) {
     // Check if we have an article with cover media to use instead
     if (articleOnly && twitterStatus.article?.cover_media?.media_info?.__typename === 'ApiImage') {
       const coverImage = twitterStatus.article.cover_media.media_info as TwitterApiImage;
+      const coverUrl = proxyTwitterPostPhotoUrl(
+        coverImage.original_img_url,
+        shouldProxyTelegramPbsPhotos(isTelegram)
+      );
       headers.push(
-        `<meta property="og:image" content="${coverImage.original_img_url}"/>`,
+        `<meta property="og:image" content="${coverUrl}"/>`,
         `<meta property="og:image:width" content="${coverImage.original_img_width}"/>`,
         `<meta property="og:image:height" content="${coverImage.original_img_height}"/>`
       );
@@ -653,7 +700,12 @@ export const handleStatus = async (
     text = sanitizeText(twitterStatus.article.preview_text);
   }
 
-  const useCard = status.embed_card === 'tweet' ? status.quote?.embed_card : status.embed_card;
+  const useCard =
+    status.embed_card === 'tweet'
+      ? status.quote && !isTombstone(status.quote)
+        ? (status.quote as APITwitterStatus).embed_card
+        : 'summary'
+      : status.embed_card;
 
   headers.push(`<meta property="twitter:card" content="${useCard}"/>`);
 
@@ -694,7 +746,7 @@ export const handleStatus = async (
   if (!flags.gallery) {
     /* The additional oembed is pulled by Discord to enable improved embeds.
       Telegram does not use this. */
-    let providerEngagementText = getSocialProof(status) ?? Strings.DEFAULT_AUTHOR_TEXT;
+    let providerEngagementText = getSocialProof(status as APIStatus) ?? Strings.DEFAULT_AUTHOR_TEXT;
     providerEngagementText = providerEngagementText.replace(/ {4}/g, '  ');
 
     /* Workaround to prevent us from accidentally doubling up the engagement text in both provider and author fields */
@@ -703,7 +755,7 @@ export const handleStatus = async (
     }
 
     let provider = '';
-    const mediaType = overrideMedia ?? status.media.videos?.[0]?.type;
+    const mediaType = overrideMedia ?? (status as APITwitterStatus).media.videos?.[0]?.type;
     const branding = getBranding(c);
 
     if (mediaType === 'gif') {
@@ -750,7 +802,15 @@ export const handleStatus = async (
   }
 
   if (useActivity) {
-    const data: { i: string; l?: string; h?: string; t?: number; m?: number; n?: number } = {
+    const data: {
+      i: string;
+      l?: string;
+      h?: string;
+      p?: string;
+      t?: number;
+      m?: number;
+      n?: number;
+    } = {
       i: statusId
     };
     /* Convert necessary flags into snowcode data */
@@ -759,6 +819,9 @@ export const handleStatus = async (
     }
     if (status.provider === DataProvider.Bluesky) {
       data.h = status.author.id;
+      if (blueskyActivityPdsOut?.pdsHostHint) {
+        data.p = blueskyActivityPdsOut.pdsHostHint;
+      }
     }
     if (flags.textOnly) {
       data.t = 1;
@@ -769,7 +832,17 @@ export const handleStatus = async (
     if (mediaNumber) {
       data.n = mediaNumber;
     }
-    const snowflake = encodeSnowcode(data);
+    let snowflake: string;
+    try {
+      snowflake = encodeSnowcode(data);
+    } catch (e) {
+      if (data.p !== undefined) {
+        const { p: _omit, ...rest } = data;
+        snowflake = encodeSnowcode(rest);
+      } else {
+        throw e;
+      }
+    }
     console.log('snowflake', snowflake);
     let base: string;
     switch (status.provider) {
@@ -808,6 +881,7 @@ export const handleStatus = async (
   /* Finally, after all that work we return the response HTML! */
   return c.html(
     Strings.BASE_HTML.format({
+      runtime: formatRuntime(),
       lang: `lang="${lang}"`,
       headers: headers.join(''),
       body: ivbody

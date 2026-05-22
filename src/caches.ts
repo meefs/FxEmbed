@@ -9,6 +9,11 @@ export const cacheMiddleware = (): MiddlewareHandler => async (c, next) => {
   // https://developers.cloudflare.com/workers/examples/cache-api/
   let cacheUrl = new URL(request.url);
 
+  // Disable caching for Discord for now because of https://github.com/FxEmbed/FxEmbed/issues/2025
+  if (userAgent.includes('Discordbot') || userAgent.includes('Firefox/92')) {
+    return await next();
+  }
+
   /* User agents that include both Telegram and Discord should not be cached
      since our response would contain quirks of both platforms. */
   if (userAgent.includes('TelegramBot') && userAgent.includes('Discordbot')) {
@@ -39,7 +44,7 @@ export const cacheMiddleware = (): MiddlewareHandler => async (c, next) => {
   const apiRealmHost =
     Constants.API_HOST_LIST.includes(cacheUrl.hostname) ||
     Constants.BLUESKY_API_HOST_LIST.includes(cacheUrl.hostname) ||
-    Constants.GENERIC_API_HOST_LIST.includes(cacheUrl.hostname);
+    Constants.ATMOSPHERE_API_HOST_LIST.includes(cacheUrl.hostname);
   const returnAsJson = apiRealmHost;
   const skipReadThroughCache = apiRealmHost;
 

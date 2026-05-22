@@ -1,5 +1,6 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { trimTrailingSlash } from 'hono/trailing-slash';
+import { registerOpenApiJsonRoute } from '../api/openapi-json-route';
 import { apiOpenapiValidationHook } from '../api/openapi-validation-hook';
 import { Constants } from '../../constants';
 import { Strings } from '../../strings';
@@ -12,6 +13,7 @@ import {
   blueskyProfileStatusesV2Route,
   blueskyProfileV2Route,
   blueskySearchV2Route,
+  blueskyTrendsV2Route,
   blueskyStatusLikesV2Route,
   blueskyStatusRepostsV2Route,
   blueskyStatusV2Route,
@@ -26,6 +28,7 @@ import {
   blueskyProfileMediaAPIRequest,
   blueskyProfileStatusesAPIRequest,
   blueskySearchAPIRequest,
+  blueskyTrendsAPIRequest,
   blueskyStatusAPIRequest,
   blueskyStatusLikesAPIRequest,
   blueskyStatusRepostsAPIRequest,
@@ -55,6 +58,7 @@ blueskyApi.openapi(blueskyStatusLikesV2Route, blueskyStatusLikesAPIRequest);
 blueskyApi.openapi(blueskyThreadV2Route, blueskyThreadAPIRequest);
 blueskyApi.openapi(blueskyConversationV2Route, blueskyConversationAPIRequest);
 blueskyApi.openapi(blueskySearchV2Route, blueskySearchAPIRequest);
+blueskyApi.openapi(blueskyTrendsV2Route, blueskyTrendsAPIRequest);
 blueskyApi.openapi(blueskyProfileV2Route, blueskyProfileAPIRequest);
 blueskyApi.openapi(blueskyProfileFollowersV2Route, blueskyProfileFollowersAPIRequest);
 blueskyApi.openapi(blueskyProfileFollowingV2Route, blueskyProfileFollowingAPIRequest);
@@ -62,13 +66,12 @@ blueskyApi.openapi(blueskyProfileMediaV2Route, blueskyProfileMediaAPIRequest);
 blueskyApi.openapi(blueskyProfileLikesV2Route, blueskyProfileLikesAPIRequest);
 blueskyApi.openapi(blueskyProfileStatusesV2Route, blueskyProfileStatusesAPIRequest);
 
-blueskyApi.doc('/2/openapi.json', {
+registerOpenApiJsonRoute(blueskyApi, '/2/openapi.json', {
   openapi: '3.0.0',
   info: {
     title: 'FxBluesky API',
     version: '2.0.0',
-    description:
-      'FxBluesky API v2 (Bluesky / ATProto; response shape aligned with FxTwitter API v2 where applicable)'
+    description: 'FxBluesky API v2'
   },
   servers: Constants.BLUESKY_API_HOST_ROOT
     ? [

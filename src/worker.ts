@@ -7,12 +7,68 @@ import { rewriteFramesIntegration } from 'toucan-js';
 
 import { Strings } from './strings';
 import { Constants } from './constants';
+import {
+  setBlueskyProviderEnv,
+  setBlueskyProxyRuntime
+} from '@fxembed/atmosphere/providers/bluesky-runtime';
+import { setMastodonProviderEnv } from '@fxembed/atmosphere/providers/mastodon-runtime';
+import {
+  setTwitterProviderEnv,
+  setTwitterProxyRuntime
+} from '@fxembed/atmosphere/providers/twitter-runtime';
+import * as proxyCreds from './providers/twitter/proxy/credentials';
+
+setBlueskyProviderEnv({
+  apiRoot: Constants.BLUESKY_API_ROOT,
+  webRoot: Constants.BLUESKY_ROOT,
+  videoBase: Constants.BLUESKY_VIDEO_BASE,
+  mosaicBskyDomainList: Constants.MOSAIC_BSKY_DOMAIN_LIST,
+  polyglotDomainList: Constants.POLYGLOT_DOMAIN_LIST
+});
+
+setBlueskyProxyRuntime({
+  initCredentials: proxyCreds.initCredentials,
+  hasBundledEncryptedCredentials: proxyCreds.hasBundledEncryptedCredentials,
+  hasBlueskyProxyAccounts: proxyCreds.hasBlueskyProxyAccounts,
+  getShuffledBlueskyAccounts: proxyCreds.getShuffledBlueskyAccounts,
+  blueskyProxyServiceHostname: proxyCreds.blueskyProxyServiceHostname
+});
+
+setMastodonProviderEnv({
+  userAgent: Constants.FRIENDLY_USER_AGENT,
+  mosaicDomainList: Constants.MOSAIC_DOMAIN_LIST,
+  polyglotDomainList: Constants.POLYGLOT_DOMAIN_LIST
+});
+
+setTwitterProviderEnv({
+  apiRoot: Constants.TWITTER_API_ROOT,
+  webRoot: Constants.TWITTER_ROOT,
+  friendlyUserAgent: Constants.FRIENDLY_USER_AGENT,
+  guestBearerToken: Constants.GUEST_BEARER_TOKEN,
+  baseHeaders: Constants.BASE_HEADERS,
+  guestTokenMaxAge: Constants.GUEST_TOKEN_MAX_AGE,
+  mosaicDomainList: Constants.MOSAIC_DOMAIN_LIST,
+  mosaicBskyDomainList: Constants.MOSAIC_BSKY_DOMAIN_LIST,
+  polyglotDomainList: Constants.POLYGLOT_DOMAIN_LIST,
+  apiHostList: Constants.API_HOST_LIST,
+  videoBase: Constants.TWITTER_VIDEO_BASE,
+  gifTranscodeDomainList: Constants.GIF_TRANSCODE_DOMAIN_LIST,
+  oldEmbedDomains: Constants.OLD_EMBED_DOMAINS,
+  blueskyApiHostList: Constants.BLUESKY_API_HOST_LIST
+});
+
+setTwitterProxyRuntime({
+  initCredentials: proxyCreds.initCredentials,
+  hasBundledEncryptedCredentials: proxyCreds.hasBundledEncryptedCredentials,
+  hasDecryptedCredentials: proxyCreds.hasDecryptedCredentials,
+  getRandomTwitterAccount: proxyCreds.getRandomTwitterAccount
+});
 import { api } from './realms/api/router';
 import { twitter } from './realms/twitter/router';
 import { cacheMiddleware } from './caches';
 import { bluesky } from './realms/bluesky/router';
 import { blueskyApi } from './realms/bluesky-api/router';
-import { genericApi } from './realms/generic-api/router';
+import { atmosphere } from './realms/atmosphere/router';
 import { getBranding } from './helpers/branding';
 import { tiktok } from './realms/tiktok/router';
 
@@ -56,9 +112,9 @@ export const app = new Hono<{
     } else if (Constants.BLUESKY_API_HOST_LIST.includes(url.hostname)) {
       realm = 'blueskyapi';
       console.log('Bluesky API realm');
-    } else if (Constants.GENERIC_API_HOST_LIST.includes(url.hostname)) {
-      realm = 'genericapi';
-      console.log('Generic API realm');
+    } else if (Constants.ATMOSPHERE_API_HOST_LIST.includes(url.hostname)) {
+      realm = 'atmosphere';
+      console.log('Atmosphere API realm');
     } else if (Constants.STANDARD_DOMAIN_LIST.includes(baseHostName)) {
       realm = 'twitter';
       console.log('Twitter realm');
@@ -92,18 +148,18 @@ export const app = new Hono<{
   }
 });
 
-if (SENTRY_DSN) {
+if (process.env.SENTRY_DSN) {
   app.use(
     '*',
     sentry({
-      dsn: SENTRY_DSN,
+      dsn: process.env.SENTRY_DSN,
       requestDataOptions: {
         allowedHeaders: /(.*)/,
         allowedSearchParams: /(.*)/
       },
 
       integrations: [rewriteFramesIntegration({ root: '/' })],
-      release: RELEASE_NAME
+      release: Constants.RELEASE_NAME
     })
   );
 }
@@ -173,9 +229,29 @@ app.use('*', async (c, next) => {
 app.use('*', cacheMiddleware());
 app.use('*', timing({ enabled: false }));
 
+app.get('/', c => {
+  c.header('cache-control', noCache);
+  return c.text(
+    `You're running FxEmbed locally without a host header set to a valid realm domain. This means instead of falling back to Twitter realm, we expose all of them for you to poke at.
+
+    To get responses from a particular realm, set the Host header (set in .env), for example:
+      curl -H "Host: fxtwitter.com" "http://localhost:8787/user/status/123"
+    
+    Or you can access all realms by their path prefix:
+      /twitter/...     FxTwitter / FixupX
+      /bluesky/...     FxBluesky
+      /tiktok/...      TikTok realm
+      /api/...         FxTwitter API
+      /blueskyapi/...  FxBluesky API
+      /atmosphere/...  Atmosphere API (multi-provider)
+    `,
+    200
+  );
+});
+
 app.route(`/api`, api);
 app.route(`/blueskyapi`, blueskyApi);
-app.route(`/genericapi`, genericApi);
+app.route(`/atmosphere`, atmosphere);
 app.route(`/twitter`, twitter);
 app.route(`/bluesky`, bluesky);
 app.route(`/tiktok`, tiktok);

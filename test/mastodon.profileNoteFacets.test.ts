@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { mastodonAccountToApiUser } from '../src/providers/mastodon/processor';
+import { mastodonAccountToApiUser } from '@fxembed/atmosphere/providers/mastodon/processor';
 
 const baseAccount = (): MastodonAccount => ({
   id: '1',
@@ -64,14 +64,19 @@ describe('mastodonAccountToApiUser note facets', () => {
   });
 
   test('preserves spacing around inline links', () => {
-    const note = 'a <a href="https://mastodon.social/tags/x" class="mention hashtag" rel="tag">#x</a> b';
+    const note =
+      'a <a href="https://mastodon.social/tags/x" class="mention hashtag" rel="tag">#x</a> b';
     const u = mastodonAccountToApiUser({ ...baseAccount(), note }, 'mastodon.social');
     expect(u.raw_description.text).toBe('a #x b');
   });
 
   test('custom emoji img becomes :shortcode: and custom_emoji facet', () => {
     const emojis = [
-      { shortcode: 'blobcat', url: 'https://files.example/custom/blobcat.png', static_url: 'https://files.example/static/blobcat.png' }
+      {
+        shortcode: 'blobcat',
+        url: 'https://files.example/custom/blobcat.png',
+        static_url: 'https://files.example/static/blobcat.png'
+      }
     ];
     const note =
       '<p>Hi <img src="https://files.example/custom/blobcat.png" alt=":blobcat:" title=":blobcat:" class="custom-emoji" /></p>';

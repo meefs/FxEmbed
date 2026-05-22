@@ -6,9 +6,11 @@ import { sanitizeText, wrapForeignLinks as wrapForeignLinksUtil } from '../helpe
 import { DataProvider } from '../enum';
 import { getBranding } from '../helpers/branding';
 import { renderArticleToHtml } from '../helpers/article';
-import type { APITwitterStatus } from '../realms/api/schemas';
+import type { APIStatusTombstone, APITwitterStatus } from '../realms/api/schemas';
+import { isTombstone } from '../helpers/tombstone';
 import { getVideoTranscodeDomain, getVideoTranscodeDomainBluesky } from '../helpers/transcode';
 import { experimentCheck, Experiment } from '../experiments';
+import { proxyTwitterPostPhotoUrl, shouldProxyTelegramPbsPhotos } from '../helpers/pbsProxy';
 
 /**
  * Check if the tweet text is essentially just an article URL with no meaningful additional content.
@@ -67,7 +69,7 @@ const populateUserLinks = (text: string, status: APIStatus): string => {
   return text;
 };
 
-const generateStatusMedia = (status: APIStatus): string => {
+const generateStatusMedia = (status: APIStatus, proxyPbs: boolean): string => {
   let media = '';
   if (status.media?.all?.length) {
     status.media.all.forEach(mediaItem => {
@@ -84,6 +86,7 @@ const generateStatusMedia = (status: APIStatus): string => {
         case 'photo':
           // eslint-disable-next-line no-case-declarations
           const { altText } = mediaItem as APIPhoto;
+          url = proxyTwitterPostPhotoUrl(url, proxyPbs);
           media += `<img src="{url}" {altText}/>`.format({
             altText: altText ? `alt="${altText}"` : '',
             url: url
@@ -190,27 +193,27 @@ const generateInlineAuthorHeader = (
   authorActionType: AuthorActionType | null
 ): string => {
   if (authorActionType === AuthorActionType.Original) {
-    return `<h4><i>${i18next.t('ivAuthorActionOriginal', {
+    return `<h5><i>${i18next.t('ivAuthorActionOriginal', {
       statusUrl: status.url,
       authorName: author.name,
       authorUrl: author.url,
       authorScreenName: author.screen_name
-    })}</i></h4>`;
+    })}</i></h5>`;
   } else if (authorActionType === AuthorActionType.FollowUp) {
-    return `<h4><i>${i18next.t('ivAuthorActionFollowUp', {
+    return `<h5><i>${i18next.t('ivAuthorActionFollowUp', {
       statusUrl: status.url,
       authorName: author.name,
       authorUrl: author.url,
       authorScreenName: author.screen_name
-    })}</i></h4>`;
+    })}</i></h5>`;
   }
   // Reply / unknown
-  return `<h4><i>${i18next.t('ivAuthorActionReply', {
+  return `<h5><i>${i18next.t('ivAuthorActionReply', {
     statusUrl: status.url,
     authorName: author.name,
     authorUrl: author.url,
     authorScreenName: author.screen_name
-  })}</i></h4>`;
+  })}</i></h5>`;
 };
 
 const wrapForeignLinks = (url: string) => {
@@ -322,12 +325,18 @@ const generateCommunityNote = (status: APITwitterStatus): string => {
 };
 
 const generateStatus = (
-  status: APIStatus,
+  status: APIStatus | APIStatusTombstone,
   author: APIUser,
   language: string,
   isQuote = false,
-  authorActionType: AuthorActionType | null
+  authorActionType: AuthorActionType | null,
+  proxyPbs: boolean
 ): string => {
+  if (isTombstone(status)) {
+    const inner = `<i>${sanitizeText(status.message)}</i>`;
+    return isQuote ? `<blockquote>${inner}</blockquote>` : `<p>${inner}</p>`;
+  }
+
   const twitterStatus = status as APITwitterStatus;
 
   // Check if this is a Twitter article
@@ -338,7 +347,8 @@ const generateStatus = (
       maxLength: undefined, // No limit for Telegram
       fullRenderer: true, // Render inline media for Telegram
       mediaEntities: twitterStatus.article.media_entities,
-      apiHost: Constants.API_HOST_LIST[0] // For wrapping foreign links
+      apiHost: Constants.API_HOST_LIST[0], // For wrapping foreign links
+      photoUrlTransform: url => proxyTwitterPostPhotoUrl(url, proxyPbs)
     });
 
     // Render cover media if available
@@ -346,7 +356,8 @@ const generateStatus = (
       const coverMedia = twitterStatus.article.cover_media;
       if (coverMedia.media_info.__typename === 'ApiImage') {
         const image = coverMedia.media_info;
-        articleCoverMedia = `<img src="${image.original_img_url}" alt="${twitterStatus.article.title}" />`;
+        const coverUrl = proxyTwitterPostPhotoUrl(image.original_img_url, proxyPbs);
+        articleCoverMedia = `<img src="${coverUrl}" alt="${twitterStatus.article.title}" />`;
       }
     }
 
@@ -370,7 +381,7 @@ const generateStatus = (
   <!-- Embed article (if applicable) -->
   ${articleHtml || notApplicableComment}
   <!-- Embed media -->
-  ${generateStatusMedia(status)} 
+  ${generateStatusMedia(status, proxyPbs)} 
   <!-- Translated text (if applicable) -->
   ${translatedText ? translatedText : notApplicableComment}
   <!-- Inline author (if applicable) -->
@@ -382,26 +393,32 @@ const generateStatus = (
   <!-- Embed poll -->
   ${status.poll ? generatePoll(status.poll, status.lang ?? 'en') : notApplicableComment}
   <!-- Embedded quote status -->
-  ${!isQuote && status.quote ? generateStatus(status.quote, author, language, true, null) : notApplicableComment}`.format(
-    {
-      quoteHeader: isQuote
-        ? '<h4>' +
-          i18next.t('ivQuoteHeader').format({
-            url: status.url,
-            authorName: status.author.name,
-            authorHandle: status.author.screen_name,
-            authorURL: status.author.url
-          }) +
-          '</h4>'
-        : ''
-    }
-  );
+  ${
+    !isQuote && status.quote
+      ? isTombstone(status.quote)
+        ? `<blockquote><i>${sanitizeText(status.quote.message)}</i></blockquote>`
+        : generateStatus(status.quote, author, language, true, null, proxyPbs)
+      : notApplicableComment
+  }`.format({
+    quoteHeader: isQuote
+      ? '<h4>' +
+        i18next.t('ivQuoteHeader').format({
+          url: status.url,
+          authorName: status.author.name,
+          authorHandle: status.author.screen_name,
+          authorURL: status.author.url
+        }) +
+        '</h4>'
+      : ''
+  });
 };
 
 export const renderInstantView = (properties: RenderProperties): ResponseInstructions => {
   console.log('Generating Instant View...');
-  const { status, thread, flags } = properties;
+  const { status, thread, flags, userAgent } = properties;
   const instructions: ResponseInstructions = { addHeaders: [] };
+  const isTelegram = (userAgent ?? '').includes('TelegramBot');
+  const proxyPbs = shouldProxyTelegramPbsPhotos(isTelegram);
 
   let previousThreadPieceAuthor: string | null = null;
   let originalAuthor: string | null = null;
@@ -459,11 +476,15 @@ export const renderInstantView = (properties: RenderProperties): ResponseInstruc
         ${articleOnly ? `<h2>${status.author.name} (@${status.author.screen_name})</h2>` : ''}
 
     ${useThread
-      .map(status => {
+      .map(item => {
         console.log('previousThreadPieceAuthor', previousThreadPieceAuthor);
-        if (!status) {
+        if (!item) {
           return '';
         }
+        if (isTombstone(item)) {
+          return `<p><i>${sanitizeText(item.message)}</i></p>`;
+        }
+        const status = item as APIStatus;
         if (originalAuthor === null) {
           originalAuthor = status.author?.id;
         }
@@ -496,11 +517,12 @@ export const renderInstantView = (properties: RenderProperties): ResponseInstruc
         previousThreadPieceAuthor = status.author?.id;
 
         return generateStatus(
-          status as APIStatus,
+          status,
           status.author ?? thread?.author,
           properties?.targetLanguage ?? 'en',
           false,
-          authorAction
+          authorAction,
+          proxyPbs
         );
       })
       .join('')}

@@ -1,24 +1,27 @@
 import type { RouteHandler } from '@hono/zod-openapi';
+import type { APIBlueskyStatus } from '../api/schemas';
 import { Constants } from '../../constants';
 import { jsonAfterNormalize, normalizeApiJsonResponse } from '../api/normalizeApiJsonResponse';
 import { isParamTruthy } from '../../helpers/utils';
 import {
   constructBlueskyConversation,
   constructBlueskyThread
-} from '../../providers/bluesky/conversation';
-import { blueskyUserProfileAPI } from '../../providers/bluesky/profile';
+} from '@fxembed/atmosphere/providers/bluesky/conversation';
+import { blueskyBuildHostFromContext } from '../../providers/bluesky/build-host-adapter';
+import { blueskyUserProfileAPI } from '@fxembed/atmosphere/providers/bluesky/profile';
 import {
   blueskyProfileLikesAPI,
   blueskyProfileMediaAPI,
   blueskyProfileStatusesAPI
-} from '../../providers/bluesky/profileStatuses';
+} from '@fxembed/atmosphere/providers/bluesky/profileStatuses';
 import {
   blueskyProfileFollowersAPI,
   blueskyProfileFollowingAPI
-} from '../../providers/bluesky/profileFollowers';
-import { blueskySearchAPI } from '../../providers/bluesky/search';
-import { blueskyStatusLikesAPI } from '../../providers/bluesky/statusLikes';
-import { blueskyStatusRepostsAPI } from '../../providers/bluesky/statusReposts';
+} from '@fxembed/atmosphere/providers/bluesky/profileFollowers';
+import { blueskySearchAPI } from '@fxembed/atmosphere/providers/bluesky/search';
+import { blueskyTrendsAPI } from '@fxembed/atmosphere/providers/bluesky/trends';
+import { blueskyStatusLikesAPI } from '@fxembed/atmosphere/providers/bluesky/statusLikes';
+import { blueskyStatusRepostsAPI } from '@fxembed/atmosphere/providers/bluesky/statusReposts';
 import {
   blueskyConversationV2Route,
   blueskyProfileFollowersV2Route,
@@ -28,6 +31,7 @@ import {
   blueskyProfileStatusesV2Route,
   blueskyProfileV2Route,
   blueskySearchV2Route,
+  blueskyTrendsV2Route,
   blueskyStatusLikesV2Route,
   blueskyStatusRepostsV2Route,
   blueskyStatusV2Route,
@@ -40,10 +44,16 @@ const unixTimestampParamToMs = (unix: number): number =>
 export const blueskyStatusAPIRequest: RouteHandler<typeof blueskyStatusV2Route> = async c => {
   const { handle, rkey } = c.req.valid('param');
   const { lang } = c.req.valid('query');
-  const processedResponse = await constructBlueskyThread(rkey, handle, false, c, lang);
+  const processedResponse = await constructBlueskyThread(
+    rkey,
+    handle,
+    false,
+    blueskyBuildHostFromContext(c),
+    lang
+  );
   const { httpStatus, payload } = normalizeApiJsonResponse(
     processedResponse,
-    [200, 400, 404, 500] as const,
+    [200, 400, 404, 500, 503] as const,
     'blueskyStatusAPIRequest'
   );
   c.status(httpStatus);
@@ -61,7 +71,14 @@ export const blueskyStatusRepostsAPIRequest: RouteHandler<
   const count = query.count ?? 20;
   const cursor = query.cursor ?? null;
 
-  const response = await blueskyStatusRepostsAPI(handle, rkey, { count, cursor }, c);
+  const response = await blueskyStatusRepostsAPI(
+    handle,
+    rkey,
+    { count, cursor },
+    {
+      credentialKey: c.env?.CREDENTIAL_KEY
+    }
+  );
   const { httpStatus, payload } = normalizeApiJsonResponse(
     response,
     [200, 400, 404, 500] as const,
@@ -82,7 +99,14 @@ export const blueskyStatusLikesAPIRequest: RouteHandler<
   const count = query.count ?? 20;
   const cursor = query.cursor ?? null;
 
-  const response = await blueskyStatusLikesAPI(handle, rkey, { count, cursor }, c);
+  const response = await blueskyStatusLikesAPI(
+    handle,
+    rkey,
+    { count, cursor },
+    {
+      credentialKey: c.env?.CREDENTIAL_KEY
+    }
+  );
   const { httpStatus, payload } = normalizeApiJsonResponse(
     response,
     [200, 400, 404, 500] as const,
@@ -98,10 +122,16 @@ export const blueskyStatusLikesAPIRequest: RouteHandler<
 export const blueskyThreadAPIRequest: RouteHandler<typeof blueskyThreadV2Route> = async c => {
   const { handle, rkey } = c.req.valid('param');
   const { lang } = c.req.valid('query');
-  const processedResponse = await constructBlueskyThread(rkey, handle, true, c, lang);
+  const processedResponse = await constructBlueskyThread(
+    rkey,
+    handle,
+    true,
+    blueskyBuildHostFromContext(c),
+    lang
+  );
   const { httpStatus, payload } = normalizeApiJsonResponse(
     processedResponse,
-    [200, 400, 404, 500] as const,
+    [200, 400, 404, 500, 503] as const,
     'blueskyThreadAPIRequest'
   );
   c.status(httpStatus);
@@ -117,7 +147,7 @@ export const blueskyConversationAPIRequest: RouteHandler<
   const { handle, rkey } = c.req.valid('param');
   const query = c.req.valid('query');
 
-  const result = await constructBlueskyConversation(handle, rkey, c, {
+  const result = await constructBlueskyConversation(handle, rkey, blueskyBuildHostFromContext(c), {
     rankingMode: query.ranking_mode ?? 'likes',
     cursor: query.cursor ?? null,
     count: query.count ?? 20,
@@ -134,7 +164,7 @@ export const blueskyConversationAPIRequest: RouteHandler<
   const processedResponse = result.data;
   const { httpStatus, payload } = normalizeApiJsonResponse(
     processedResponse,
-    [200, 400, 404, 500] as const,
+    [200, 400, 404, 500, 503] as const,
     'blueskyConversationAPIRequest'
   );
   c.status(httpStatus);
@@ -146,7 +176,9 @@ export const blueskyConversationAPIRequest: RouteHandler<
 
 export const blueskyProfileAPIRequest: RouteHandler<typeof blueskyProfileV2Route> = async c => {
   const { handle } = c.req.valid('param');
-  const processedResponse = await blueskyUserProfileAPI(handle, c);
+  const processedResponse = await blueskyUserProfileAPI(handle, {
+    credentialKey: c.env?.CREDENTIAL_KEY
+  });
   const { httpStatus, payload } = normalizeApiJsonResponse(
     processedResponse,
     [200, 400, 404, 500] as const,
@@ -161,7 +193,7 @@ export const blueskyProfileAPIRequest: RouteHandler<typeof blueskyProfileV2Route
 
 export const blueskySearchAPIRequest: RouteHandler<typeof blueskySearchV2Route> = async c => {
   const query = c.req.valid('query');
-  const searchResponse = await blueskySearchAPI(c, {
+  const searchResponse = await blueskySearchAPI(blueskyBuildHostFromContext(c), {
     q: query.q,
     feed: query.feed ?? 'latest',
     count: query.count ?? 30,
@@ -181,6 +213,25 @@ export const blueskySearchAPIRequest: RouteHandler<typeof blueskySearchV2Route> 
   return jsonAfterNormalize<typeof blueskySearchV2Route>(c, payload, httpStatus);
 };
 
+export const blueskyTrendsAPIRequest: RouteHandler<typeof blueskyTrendsV2Route> = async c => {
+  const query = c.req.valid('query');
+  const type = query.type ?? 'trending';
+  const count = query.count ?? 20;
+  const trendsResponse = await blueskyTrendsAPI(type, count, {
+    credentialKey: c.env?.CREDENTIAL_KEY
+  });
+  const { httpStatus, payload } = normalizeApiJsonResponse(
+    trendsResponse,
+    [200, 400, 404, 500] as const,
+    'blueskyTrendsAPIRequest'
+  );
+  c.status(httpStatus);
+  for (const [header, value] of Object.entries(Constants.API_RESPONSE_HEADERS)) {
+    c.header(header, value);
+  }
+  return jsonAfterNormalize<typeof blueskyTrendsV2Route>(c, payload, httpStatus);
+};
+
 export const blueskyProfileFollowersAPIRequest: RouteHandler<
   typeof blueskyProfileFollowersV2Route
 > = async c => {
@@ -189,7 +240,13 @@ export const blueskyProfileFollowersAPIRequest: RouteHandler<
   const count = query.count ?? 20;
   const cursor = query.cursor ?? null;
 
-  const response = await blueskyProfileFollowersAPI(handle, { count, cursor }, c);
+  const response = await blueskyProfileFollowersAPI(
+    handle,
+    { count, cursor },
+    {
+      credentialKey: c.env?.CREDENTIAL_KEY
+    }
+  );
   const { httpStatus, payload } = normalizeApiJsonResponse(
     response,
     [200, 400, 404, 500] as const,
@@ -210,7 +267,13 @@ export const blueskyProfileFollowingAPIRequest: RouteHandler<
   const count = query.count ?? 20;
   const cursor = query.cursor ?? null;
 
-  const response = await blueskyProfileFollowingAPI(handle, { count, cursor }, c);
+  const response = await blueskyProfileFollowingAPI(
+    handle,
+    { count, cursor },
+    {
+      credentialKey: c.env?.CREDENTIAL_KEY
+    }
+  );
   const { httpStatus, payload } = normalizeApiJsonResponse(
     response,
     [200, 400, 404, 500] as const,
@@ -236,7 +299,7 @@ export const blueskyProfileMediaAPIRequest: RouteHandler<
       cursor: query.cursor ?? null,
       language: query.lang
     },
-    c
+    blueskyBuildHostFromContext(c)
   );
 
   const { httpStatus, payload } = normalizeApiJsonResponse(
@@ -264,7 +327,7 @@ export const blueskyProfileLikesAPIRequest: RouteHandler<
       cursor: query.cursor ?? null,
       language: query.lang
     },
-    c
+    blueskyBuildHostFromContext(c)
   );
 
   const { httpStatus, payload } = normalizeApiJsonResponse(
@@ -292,6 +355,7 @@ export const blueskyProfileStatusesAPIRequest = (async (
   const count = query.count ?? 20;
   const cursor = query.cursor ?? null;
   const withReplies = isParamTruthy(query.with_replies ?? c.req.query('withReplies'));
+  const groupThreads = isParamTruthy(query.groupthreads ?? c.req.query('groupthreads'));
   const sinceParam = query.since;
 
   const statusesResponse = await blueskyProfileStatusesAPI(
@@ -300,9 +364,10 @@ export const blueskyProfileStatusesAPIRequest = (async (
       count,
       cursor,
       withReplies,
-      language: query.lang
+      language: query.lang,
+      groupThreads
     },
-    c
+    blueskyBuildHostFromContext(c)
   );
 
   const applySinceNoContent =
@@ -310,7 +375,14 @@ export const blueskyProfileStatusesAPIRequest = (async (
 
   if (applySinceNoContent) {
     const sinceMs = unixTimestampParamToMs(sinceParam);
-    const hasNewerPost = statusesResponse.results.some(s => {
+    const hasNewerPost = statusesResponse.results.some(item => {
+      if ('type' in item && item.type === 'thread') {
+        return item.statuses.some(s => {
+          const tMs = s.created_timestamp * 1000;
+          return Number.isFinite(tMs) && tMs > sinceMs;
+        });
+      }
+      const s = item as APIBlueskyStatus;
       const tMs = s.created_timestamp * 1000;
       return Number.isFinite(tMs) && tMs > sinceMs;
     });
